@@ -1,0 +1,1016 @@
+#include <SFML/Graphics.hpp>
+#include <SFML/Window.hpp>
+
+#include <iostream>
+#include <vector>
+#include <string>
+#include <cmath>
+#include <algorithm>
+
+
+
+const unsigned int WINDOW_WIDTH  = 900;
+const unsigned int WINDOW_HEIGHT = 1600;
+
+const unsigned int TOOLBAR_WIDTH = 130;
+const unsigned int TOPBAR_HEIGHT = 80;
+const unsigned int STATUS_HEIGHT = 55;
+
+// Área do canvas
+const unsigned int CANVAS_X = TOOLBAR_WIDTH + 30;
+const unsigned int CANVAS_Y = TOPBAR_HEIGHT + 30;
+
+const unsigned int CANVAS_WIDTH =
+    WINDOW_WIDTH - CANVAS_X - 30;
+
+const unsigned int CANVAS_HEIGHT =
+    WINDOW_HEIGHT - CANVAS_Y - STATUS_HEIGHT - 30;
+
+
+
+enum class Tool
+{
+    Brush,
+    Eraser,
+    Line,
+    Rectangle,
+    Circle,
+    Fill
+};
+
+
+
+struct CanvasState
+{
+    sf::Image image;
+};
+
+/
+class GothicPaint
+{
+private:
+
+    sf::RenderWindow window;
+
+    sf::RenderTexture canvasTexture;
+
+    sf::Sprite canvasSprite;
+
+    Tool currentTool = Tool::Brush;
+
+    sf::Color currentColor = sf::Color::White;
+
+    float brushSize = 8.0f;
+
+    bool drawing = false;
+
+    sf::Vector2f startPosition;
+
+    sf::Vector2f currentPosition;
+
+    // Histórico
+    std::vector<CanvasState> undoStack;
+    std::vector<CanvasState> redoStack;
+
+    // Cores
+    std::vector<sf::Color> palette;
+
+public:
+
+    GothicPaint()
+        : window(
+            sf::VideoMode(
+                {WINDOW_WIDTH, WINDOW_HEIGHT}
+            ),
+            "GOTHIC PAINT // VERTICAL MODE"
+        ),
+          canvasTexture(
+              {CANVAS_WIDTH, CANVAS_HEIGHT}
+          ),
+          canvasSprite(canvasTexture.getTexture())
+    {
+        window.setFramerateLimit(60);
+
+        criarPaleta();
+
+        canvasTexture.clear(
+            sf::Color(245, 245, 245)
+        );
+
+        canvasTexture.display();
+    }
+
+    
+
+    void criarPaleta()
+    {
+        palette =
+        {
+            sf::Color::Black,
+            sf::Color::White,
+
+            sf::Color(120, 0, 0),
+            sf::Color(180, 0, 0),
+
+            sf::Color(0, 100, 0),
+            sf::Color(0, 180, 80),
+
+            sf::Color(20, 40, 150),
+            sf::Color(50, 100, 255),
+
+            sf::Color(120, 0, 150),
+            sf::Color(200, 50, 255),
+
+            sf::Color(255, 150, 0),
+            sf::Color(255, 220, 0),
+
+            sf::Color(100, 100, 100),
+            sf::Color(200, 200, 200),
+
+            sf::Color(40, 40, 40),
+            sf::Color(255, 80, 120)
+        };
+    }
+
+
+    void executar()
+    {
+        while (window.isOpen())
+        {
+            processarEventos();
+
+            atualizar();
+
+            desenhar();
+        }
+    }
+
+
+    void processarEventos()
+    {
+        while (auto event = window.pollEvent())
+        {
+            if (event->is<sf::Event::Closed>())
+            {
+                window.close();
+            }
+
+            processarMouse(event);
+
+            processarTeclado(event);
+        }
+    }
+
+
+    void processarTeclado(
+        const std::optional<sf::Event>& event
+    )
+    {
+        if (!event.has_value())
+            return;
+
+        auto keyEvent =
+            event->getIf<sf::Event::KeyPressed>();
+
+        if (!keyEvent)
+            return;
+
+        // B = Brush
+        if (keyEvent->code == sf::Keyboard::Key::B)
+        {
+            currentTool = Tool::Brush;
+        }
+
+        // E = Eraser
+        if (keyEvent->code == sf::Keyboard::Key::E)
+        {
+            currentTool = Tool::Eraser;
+        }
+
+        // L = Line
+        if (keyEvent->code == sf::Keyboard::Key::L)
+        {
+            currentTool = Tool::Line;
+        }
+
+        // R = Rectangle
+        if (keyEvent->code == sf::Keyboard::Key::R)
+        {
+            currentTool = Tool::Rectangle;
+        }
+
+        // C = Circle
+        if (keyEvent->code == sf::Keyboard::Key::C)
+        {
+            currentTool = Tool::Circle;
+        }
+
+        // + aumenta pincel
+        if (keyEvent->code == sf::Keyboard::Key::Add)
+        {
+            brushSize += 2;
+
+            if (brushSize > 100)
+                brushSize = 100;
+        }
+
+        // - diminui pincel
+        if (keyEvent->code == sf::Keyboard::Key::Subtract)
+        {
+            brushSize -= 2;
+
+            if (brushSize < 1)
+                brushSize = 1;
+        }
+
+        // CTRL + Z
+        if (
+            keyEvent->code ==
+            sf::Keyboard::Key::Z &&
+            keyEvent->control
+        )
+        {
+            desfazer();
+        }
+
+        // CTRL + Y
+        if (
+            keyEvent->code ==
+            sf::Keyboard::Key::Y &&
+            keyEvent->control
+        )
+        {
+            refazer();
+        }
+
+        // CTRL + S
+        if (
+            keyEvent->code ==
+            sf::Keyboard::Key::S &&
+            keyEvent->control
+        )
+        {
+            salvar();
+        }
+
+        // DELETE
+        if (
+            keyEvent->code ==
+            sf::Keyboard::Key::Delete
+        )
+        {
+            limpar();
+        }
+    }
+
+    
+
+    void processarMouse(
+        const std::optional<sf::Event>& event
+    )
+    {
+        if (!event.has_value())
+            return;
+
+        auto pressed =
+            event->getIf<sf::Event::MouseButtonPressed>();
+
+        if (pressed)
+        {
+            if (
+                pressed->button ==
+                sf::Mouse::Button::Left
+            )
+            {
+                sf::Vector2f mouse =
+                    window.mapPixelToCoords(
+                        {pressed->position.x,
+                         pressed->position.y}
+                    );
+
+                if (mouseDentroDoCanvas(mouse))
+                {
+                    salvarEstado();
+
+                    drawing = true;
+
+                    startPosition =
+                        converterCanvas(mouse);
+
+                    currentPosition =
+                        startPosition;
+                }
+
+                verificarPaleta(mouse);
+            }
+        }
+
+        auto released =
+            event->getIf<sf::Event::MouseButtonReleased>();
+
+        if (released)
+        {
+            if (
+                released->button ==
+                sf::Mouse::Button::Left
+            )
+            {
+                if (drawing)
+                {
+                    finalizarDesenho();
+                }
+
+                drawing = false;
+            }
+        }
+
+        auto moved =
+            event->getIf<sf::Event::MouseMoved>();
+
+        if (moved)
+        {
+            sf::Vector2f mouse =
+                window.mapPixelToCoords(
+                    {moved->position.x,
+                     moved->position.y}
+                );
+
+            if (mouseDentroDoCanvas(mouse))
+            {
+                currentPosition =
+                    converterCanvas(mouse);
+
+                if (
+                    drawing &&
+                    (
+                        currentTool ==
+                        Tool::Brush ||
+
+                        currentTool ==
+                        Tool::Eraser
+                    )
+                )
+                {
+                    desenharPincel(
+                        currentPosition
+                    );
+                }
+            }
+        }
+    }
+
+  
+
+    bool mouseDentroDoCanvas(
+        sf::Vector2f pos
+    )
+    {
+        return
+            pos.x >= CANVAS_X &&
+            pos.x <= CANVAS_X + CANVAS_WIDTH &&
+            pos.y >= CANVAS_Y &&
+            pos.y <= CANVAS_Y + CANVAS_HEIGHT;
+    }
+
+    
+    sf::Vector2f converterCanvas(
+        sf::Vector2f pos
+    )
+    {
+        return
+        {
+            pos.x - CANVAS_X,
+            pos.y - CANVAS_Y
+        };
+    }
+
+    
+
+    void desenharPincel(
+        sf::Vector2f pos
+    )
+    {
+        sf::CircleShape brush;
+
+        brush.setRadius(
+            brushSize / 2
+        );
+
+        brush.setOrigin(
+            {
+                brushSize / 2,
+                brushSize / 2
+            }
+        );
+
+        if (
+            currentTool ==
+            Tool::Eraser
+        )
+        {
+            brush.setFillColor(
+                sf::Color(245, 245, 245)
+            );
+        }
+        else
+        {
+            brush.setFillColor(
+                currentColor
+            );
+        }
+
+        brush.setPosition(pos);
+
+        canvasTexture.draw(brush);
+
+        canvasTexture.display();
+    }
+
+    
+    void finalizarDesenho()
+    {
+        switch (currentTool)
+        {
+            case Tool::Line:
+                desenharLinha();
+                break;
+
+            case Tool::Rectangle:
+                desenharRetangulo();
+                break;
+
+            case Tool::Circle:
+                desenharCirculo();
+                break;
+
+            default:
+                break;
+        }
+    }
+
+   
+
+    void desenharLinha()
+    {
+        sf::Vector2f delta =
+            currentPosition -
+            startPosition;
+
+        float comprimento =
+            std::sqrt(
+                delta.x * delta.x +
+                delta.y * delta.y
+            );
+
+        if (comprimento == 0)
+            return;
+
+        sf::RectangleShape linha;
+
+        linha.setSize(
+            {
+                comprimento,
+                brushSize
+            }
+        );
+
+        linha.setFillColor(
+            currentColor
+        );
+
+        linha.setOrigin(
+            {
+                0,
+                brushSize / 2
+            }
+        );
+
+        linha.setPosition(
+            startPosition
+        );
+
+        float angulo =
+            std::atan2(
+                delta.y,
+                delta.x
+            ) * 180.0f / 3.14159265f;
+
+        linha.setRotation(
+            sf::degrees(angulo)
+        );
+
+        canvasTexture.draw(linha);
+
+        canvasTexture.display();
+    }
+
+    
+
+    void desenharRetangulo()
+    {
+        sf::Vector2f tamanho =
+            currentPosition -
+            startPosition;
+
+        sf::RectangleShape retangulo;
+
+        retangulo.setPosition(
+            startPosition
+        );
+
+        retangulo.setSize(
+            {
+                std::abs(tamanho.x),
+                std::abs(tamanho.y)
+            }
+        );
+
+        retangulo.setFillColor(
+            sf::Color::Transparent
+        );
+
+        retangulo.setOutlineColor(
+            currentColor
+        );
+
+        retangulo.setOutlineThickness(
+            brushSize
+        );
+
+        if (tamanho.x < 0)
+        {
+            retangulo.setPosition(
+                {
+                    currentPosition.x,
+                    retangulo.getPosition().y
+                }
+            );
+        }
+
+        if (tamanho.y < 0)
+        {
+            retangulo.setPosition(
+                {
+                    retangulo.getPosition().x,
+                    currentPosition.y
+                }
+            );
+        }
+
+        canvasTexture.draw(
+            retangulo
+        );
+
+        canvasTexture.display();
+    }
+
+    
+
+    void desenharCirculo()
+    {
+        sf::Vector2f delta =
+            currentPosition -
+            startPosition;
+
+        float raio =
+            std::sqrt(
+                delta.x * delta.x +
+                delta.y * delta.y
+            );
+
+        sf::CircleShape circulo;
+
+        circulo.setRadius(
+            raio
+        );
+
+        circulo.setOrigin(
+            {
+                raio,
+                raio
+            }
+        );
+
+        circulo.setPosition(
+            startPosition
+        );
+
+        circulo.setFillColor(
+            sf::Color::Transparent
+        );
+
+        circulo.setOutlineColor(
+            currentColor
+        );
+
+        circulo.setOutlineThickness(
+            brushSize
+        );
+
+        canvasTexture.draw(
+            circulo
+        );
+
+        canvasTexture.display();
+    }
+
+   
+
+    void verificarPaleta(
+        sf::Vector2f mouse
+    )
+    {
+        const float TAMANHO = 45;
+
+        for (
+            size_t i = 0;
+            i < palette.size();
+            i++
+        )
+        {
+            float x =
+                CANVAS_X +
+                20 +
+                (i % 4) * 55;
+
+            float y =
+                CANVAS_Y +
+                CANVAS_HEIGHT +
+                5;
+
+            if (
+                mouse.x >= x &&
+                mouse.x <= x + TAMANHO &&
+                mouse.y >= y &&
+                mouse.y <= y + TAMANHO
+            )
+            {
+                currentColor =
+                    palette[i];
+            }
+        }
+    }
+
+   
+
+    void salvarEstado()
+    {
+        sf::Image imagem =
+            canvasTexture.getTexture()
+                         .copyToImage();
+
+        undoStack.push_back(
+            {imagem}
+        );
+
+        redoStack.clear();
+
+        if (undoStack.size() > 30)
+        {
+            undoStack.erase(
+                undoStack.begin()
+            );
+        }
+    }
+
+    void desfazer()
+    {
+        if (undoStack.empty())
+            return;
+
+        sf::Image atual =
+            canvasTexture.getTexture()
+                         .copyToImage();
+
+        redoStack.push_back(
+            {atual}
+        );
+
+        CanvasState estado =
+            undoStack.back();
+
+        undoStack.pop_back();
+
+        canvasTexture.clear();
+
+        sf::Texture textura(
+            estado.image
+        );
+
+        sf::Sprite sprite(
+            textura
+        );
+
+        canvasTexture.draw(sprite);
+
+        canvasTexture.display();
+    }
+
+    void refazer()
+    {
+        if (redoStack.empty())
+            return;
+
+        sf::Image atual =
+            canvasTexture.getTexture()
+                         .copyToImage();
+
+        undoStack.push_back(
+            {atual}
+        );
+
+        CanvasState estado =
+            redoStack.back();
+
+        redoStack.pop_back();
+
+        canvasTexture.clear();
+
+        sf::Texture textura(
+            estado.image
+        );
+
+        sf::Sprite sprite(
+            textura
+        );
+
+        canvasTexture.draw(sprite);
+
+        canvasTexture.display();
+    }
+
+    
+    void limpar()
+    {
+        salvarEstado();
+
+        canvasTexture.clear(
+            sf::Color(245, 245, 245)
+        );
+
+        canvasTexture.display();
+    }
+
+    
+    void salvar()
+    {
+        sf::Image imagem =
+            canvasTexture.getTexture()
+                         .copyToImage();
+
+        if (
+            imagem.saveToFile(
+                "gothic_paint.png"
+            )
+        )
+        {
+            std::cout
+                << "Imagem salva!\n";
+        }
+        else
+        {
+            std::cout
+                << "Erro ao salvar!\n";
+        }
+    }
+
+    
+
+    void atualizar()
+    {
+        // Futuras animações,
+        // zoom, seleção etc.
+    }
+
+    /
+
+    void desenhar()
+    {
+        window.clear(
+            sf::Color(18, 18, 22)
+        );
+
+        desenharTopo();
+
+        desenharBarraLateral();
+
+        desenharCanvas();
+
+        desenharPaleta();
+
+        desenharStatus();
+
+        window.display();
+    }
+
+    
+    void desenharTopo()
+    {
+        sf::RectangleShape topo;
+
+        topo.setSize(
+            {
+                WINDOW_WIDTH,
+                TOPBAR_HEIGHT
+            }
+        );
+
+        topo.setFillColor(
+            sf::Color(25, 25, 30)
+        );
+
+        topo.setOutlineColor(
+            sf::Color(90, 90, 100)
+        );
+
+        topo.setOutlineThickness(2);
+
+        window.draw(topo);
+    }
+
+    
+
+    void desenharBarraLateral()
+    {
+        sf::RectangleShape lateral;
+
+        lateral.setSize(
+            {
+                TOOLBAR_WIDTH,
+                WINDOW_HEIGHT
+            }
+        );
+
+        lateral.setFillColor(
+            sf::Color(22, 22, 27)
+        );
+
+        lateral.setOutlineColor(
+            sf::Color(70, 70, 80)
+        );
+
+        lateral.setOutlineThickness(2);
+
+        window.draw(lateral);
+
+        for (int i = 0; i < 6; i++)
+        {
+            sf::RectangleShape botao;
+
+            botao.setSize(
+                {
+                    90,
+                    75
+                }
+            );
+
+            botao.setPosition(
+                {
+                    20,
+                    110.f +
+                    i * 100.f
+                }
+            );
+
+            botao.setFillColor(
+                sf::Color(35, 35, 42)
+            );
+
+            botao.setOutlineColor(
+                sf::Color(100, 100, 110)
+            );
+
+            botao.setOutlineThickness(2);
+
+            window.draw(botao);
+        }
+    }
+
+    
+
+    void desenharCanvas()
+    {
+        canvasSprite.setPosition(
+            {
+                static_cast<float>(CANVAS_X),
+                static_cast<float>(CANVAS_Y)
+            }
+        );
+
+        window.draw(
+            canvasSprite
+        );
+    }
+
+    
+
+    void desenharPaleta()
+    {
+        const float TAMANHO = 45;
+
+        for (
+            size_t i = 0;
+            i < palette.size();
+            i++
+        )
+        {
+            sf::RectangleShape cor;
+
+            cor.setSize(
+                {
+                    TAMANHO,
+                    TAMANHO
+                }
+            );
+
+            cor.setPosition(
+                {
+                    CANVAS_X +
+                    20 +
+                    (i % 4) * 55,
+
+                    CANVAS_Y +
+                    CANVAS_HEIGHT +
+                    5 +
+                    (i / 4) * 50
+                }
+            );
+
+            cor.setFillColor(
+                palette[i]
+            );
+
+            cor.setOutlineColor(
+                sf::Color(150, 150, 150)
+            );
+
+            cor.setOutlineThickness(2);
+
+            window.draw(cor);
+        }
+    }
+
+    
+
+    void desenharStatus()
+    {
+        sf::RectangleShape status;
+
+        status.setSize(
+            {
+                WINDOW_WIDTH,
+                STATUS_HEIGHT
+            }
+        );
+
+        status.setPosition(
+            {
+                0,
+                WINDOW_HEIGHT -
+                STATUS_HEIGHT
+            }
+        );
+
+        status.setFillColor(
+            sf::Color(25, 25, 30)
+        );
+
+        status.setOutlineColor(
+            sf::Color(70, 70, 80)
+        );
+
+        status.setOutlineThickness(2);
+
+        window.draw(status);
+    }
+};
+
+
+
+int main()
+{
+    std::cout
+        << "=====================================\n"
+        << "        GOTHIC PAINT - C++\n"
+        << "=====================================\n"
+        << "\n"
+        << "B  = Pincel\n"
+        << "E  = Borracha\n"
+        << "L  = Linha\n"
+        << "R  = Retangulo\n"
+        << "C  = Circulo\n"
+        << "+  = Aumentar pincel\n"
+        << "-  = Diminuir pincel\n"
+        << "CTRL + Z = Desfazer\n"
+        << "CTRL + Y = Refazer\n"
+        << "CTRL + S = Salvar\n"
+        << "DELETE   = Limpar\n"
+        << "\n"
+        << "=====================================\n";
+
+    GothicPaint paint;
+
+    paint.executar();
+
+    return 0;
+}
